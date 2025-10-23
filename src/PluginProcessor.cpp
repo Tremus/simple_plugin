@@ -175,14 +175,15 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
     xassert(time_graph_write_idx < juce::numElementsInArray(time_delta_history));
     uint64_t time_now   = xtime_now_ns();
-    uint64_t time_delta = time_now - time_last_process_call;
-    uint64_t prev_delta = time_delta_history[time_graph_write_idx];
+    uint64_t time_delta = time_now - this->time_last_process_call;
+    uint64_t prev_delta = this->time_delta_history[time_graph_write_idx];
 
     this->time_graph_running_sum = this->time_graph_running_sum + time_delta - prev_delta;
+    this->time_last_process_call = time_now;
 
     time_delta_history[time_graph_write_idx] = time_delta;
-    if (time_graph_write_idx >= juce::numElementsInArray(time_delta_history))
-        time_graph_write_idx = 0;
+    if (++this->time_graph_write_idx >= juce::numElementsInArray(time_delta_history))
+        this->time_graph_write_idx = 0;
 }
 
 //==============================================================================

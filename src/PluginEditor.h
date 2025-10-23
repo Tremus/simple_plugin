@@ -27,6 +27,11 @@ public:
     Label                                          label_cutoff, label_resonance;
     AudioProcessorValueTreeState::SliderAttachment att_cutoff, att_resonance;
 
+    double peak_ms = 16;
+    // Reuse the same buffers. Required framework types by juce::Graphics
+    juce::String spare_string;
+    juce::Path   spare_path;
+
     juce::Rectangle<int> graph_area = {0, 0, 0, 0};
 
     NewProjectAudioProcessorEditor(NewProjectAudioProcessor&);
