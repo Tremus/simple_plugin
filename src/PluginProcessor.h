@@ -12,6 +12,9 @@
 #include <xhl/debug.h>
 #include <xhl/maths.h>
 
+#include "dsp.h"
+#include "param_smoothing.h"
+
 struct NewProjectAudioProcessor;
 
 typedef enum MyADSRStage
@@ -128,64 +131,40 @@ public:
 
 //==============================================================================
 /** A simple demo synth voice that just plays a sine wave.. */
-struct SineWaveVoice final : public SynthesiserVoice
+struct SawWaveVoice final : public SynthesiserVoice
 {
 public:
     NewProjectAudioProcessor& processor;
 
-    // TODO: add MyADSR to prevent pops on new notes
-    MyADSR adsr;
+    struct
+    {
+        // TODO: add MyADSR to prevent pops on new notes
+        MyADSR adsr;
 
-    float cutoff    = 0;
-    float resonance = 0;
+        MySmoothedValue cutoff;
+        MySmoothedValue resonance;
 
-    float filter_state[2] = {0, 0};
+        Coeffs coeffs;
+        float  filter_state[2];
 
-    double phase     = 0.0;
-    double phase_inc = 0.0;
-    double level     = 0.0;
-    double tailOff   = 0.0;
+        float sample_rate_inv;
+        float phase;
+        float phase_inc;
+        float level;
+    } state;
 
-    SineWaveVoice(NewProjectAudioProcessor& _p)
+    SawWaveVoice(NewProjectAudioProcessor& _p)
         : processor(_p)
     {
-        memset(&adsr, 0, sizeof(adsr));
+        memset(&state, 0, sizeof(state));
     }
 
     bool canPlaySound(SynthesiserSound* sound) override { return dynamic_cast<SineWaveSound*>(sound) != nullptr; }
 
     void startNote(int midiNoteNumber, float velocity, SynthesiserSound* /*sound*/, int /*currentPitchWheelPosition*/)
-        override
-    {
-        phase   = 0.0;
-        level   = velocity * 0.15;
-        tailOff = 0.0;
+        override;
 
-        double Hz = MidiMessage::getMidiNoteInHertz(midiNoteNumber);
-        phase_inc = Hz / getSampleRate();
-
-        adsr_set_params(&adsr, 0.05, 1, 1, 0.05, getSampleRate());
-        adsr_set_stage(&adsr, ADSR_ATTACK);
-    }
-
-    void stopNote(float /*velocity*/, bool allowTailOff) override
-    {
-        if (allowTailOff)
-        {
-            adsr_set_stage(&adsr, ADSR_RELEASE);
-
-            if (approximatelyEqual(tailOff, 0.0)) // we only need to begin a tail-off if it's not already doing so - the
-                                                  // stopNote method could be called more than once.
-                tailOff = 1.0;
-        }
-        else
-        {
-            adsr_set_stage(&adsr, ADSR_IDLE);
-
-            clearCurrentNote();
-            phase_inc = 0.0;
-        }
-    }
+    void stopNote(float /*velocity*/, bool allowTailOff) override;
 
     void pitchWheelMoved(int /*newValue*/) override
     {
@@ -208,16 +187,18 @@ struct NewProjectAudioProcessor : public juce::AudioProcessor
 public:
     Synthesiser synth;
     // NOTE: APVTS is buggy and crash prone. If given more time, replace it with custom params & param attachments!!!
-    AudioProcessorValueTreeState state;
-
-    std::atomic<float>* param_cutoff    = 0;
-    std::atomic<float>* param_resonance = 0;
+    AudioProcessorValueTreeState APVTS;
 
     // Time values are in nanoseconds
-    uint64_t time_delta_history[128];
-    uint64_t time_graph_write_idx   = 0;
-    uint64_t time_graph_running_sum = 0;
-    uint64_t time_last_process_call = 0;
+    std::atomic<float>* param_cutoff    = 0;
+    std::atomic<float>* param_resonance = 0;
+    struct
+    {
+        uint64_t delta_history[128];
+        uint64_t graph_write_idx;
+        uint64_t graph_running_sum;
+        uint64_t last_process_call;
+    } time;
 
     //==============================================================================
     NewProjectAudioProcessor();

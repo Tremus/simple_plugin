@@ -28,7 +28,7 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
                          )
     ,
 #endif
-    state(
+    APVTS(
         *this,
         nullptr,
         "state",
@@ -45,18 +45,18 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 {
     xtime_init();
 
-    this->param_cutoff    = state.getRawParameterValue("cutoff");
-    this->param_resonance = state.getRawParameterValue("resonance");
+    this->param_cutoff    = APVTS.getRawParameterValue("cutoff");
+    this->param_resonance = APVTS.getRawParameterValue("resonance");
+
+    memset(&this->time, 0, sizeof(this->time));
 
     const int numVoices = 8;
     // Add some voices...
-    for (auto i = 0; i < numVoices; ++i)
-        synth.addVoice(new SineWaveVoice(*this));
+    for (int i = 0; i < numVoices; ++i)
+        synth.addVoice(new SawWaveVoice(*this));
 
     // ..and give the synth a sound to play
     synth.addSound(new SineWaveSound());
-
-    memset(time_delta_history, 0, sizeof(time_delta_history));
 }
 
 NewProjectAudioProcessor::~NewProjectAudioProcessor() {}
@@ -107,15 +107,6 @@ const juce::String NewProjectAudioProcessor::getProgramName(int index) { return 
 
 void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& newName) {}
 
-//==============================================================================
-void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
-{
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
-
-    synth.setCurrentPlaybackSampleRate(sampleRate);
-}
-
 void NewProjectAudioProcessor::releaseResources()
 {
     // When playback stops, you can use this as an opportunity to free up any
@@ -148,6 +139,17 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 }
 #endif
 
+//==============================================================================
+void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+{
+    // Use this method as the place to do any pre-playback
+    // initialisation that you need..
+
+    synth.setCurrentPlaybackSampleRate(sampleRate);
+
+    memset(&this->time, 0, sizeof(this->time));
+}
+
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -173,17 +175,21 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
     int numSamples = buffer.getNumSamples();
     synth.renderNextBlock(buffer, midiMessages, 0, numSamples);
 
-    xassert(time_graph_write_idx < juce::numElementsInArray(time_delta_history));
+    xassert(time.graph_write_idx < juce::numElementsInArray(time.delta_history));
     uint64_t time_now   = xtime_now_ns();
-    uint64_t time_delta = time_now - this->time_last_process_call;
-    uint64_t prev_delta = this->time_delta_history[time_graph_write_idx];
+    uint64_t time_delta = time_now - time.last_process_call;
+    // after program initialises or does ::prepareToPlay, 'time_last_process_call' will be set to zero
+    // To avoid getting some really large delta, we just say the delta is zero
+    if (time.last_process_call == 0)
+        time_delta = 0;
+    uint64_t prev_delta = time.delta_history[time.graph_write_idx];
 
-    this->time_graph_running_sum = this->time_graph_running_sum + time_delta - prev_delta;
-    this->time_last_process_call = time_now;
+    time.graph_running_sum = time.graph_running_sum + time_delta - prev_delta;
+    time.last_process_call = time_now;
 
-    time_delta_history[time_graph_write_idx] = time_delta;
-    if (++this->time_graph_write_idx >= juce::numElementsInArray(time_delta_history))
-        this->time_graph_write_idx = 0;
+    time.delta_history[time.graph_write_idx] = time_delta;
+    if (++time.graph_write_idx >= juce::numElementsInArray(time.delta_history))
+        time.graph_write_idx = 0;
 }
 
 //==============================================================================
@@ -215,73 +221,111 @@ void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInB
 // This creates new instances of the plugin..
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new NewProjectAudioProcessor(); }
 
-double voice_tick(SineWaveVoice& voice)
+//==============================================================================
+
+Coeffs make_filter_coeffs(float cutoff, float resonance, double sample_rate_inv)
 {
-    // Oscillator:
-    // sine wave
-    // return sin(phase * juce::MathConstants<double>::twoPi);
+    cutoff    = xm_clampf(cutoff, 0, 1);
+    resonance = xm_clampf(resonance, 0, 1);
+
+    float cutoff_Hz = xm_fast_denomalise_Hz(cutoff);
+    float lp_Q      = xm_lerpf(resonance, 0.2, 2);
+
+    return filter_LP(cutoff_Hz, lp_Q, sample_rate_inv);
+}
+
+void SawWaveVoice::startNote(
+    int   midiNoteNumber,
+    float velocity,
+    SynthesiserSound* /*sound*/,
+    int /*currentPitchWheelPosition*/)
+{
+    memset(&state, 0, sizeof(state));
+
+    state.level = velocity * 0.25; // -12dB
+
+    state.sample_rate_inv = 1.0 / getSampleRate();
+
+    float Hz        = MidiMessage::getMidiNoteInHertz(midiNoteNumber);
+    state.phase_inc = Hz * state.sample_rate_inv;
+
+    adsr_set_params(&state.adsr, 0.05, 1, 1, 0.05, getSampleRate());
+    adsr_set_stage(&state.adsr, ADSR_ATTACK);
+
+    smoothvalue_reset(&state.cutoff, processor.param_cutoff->load());
+    smoothvalue_reset(&state.resonance, processor.param_resonance->load());
+
+    state.coeffs = make_filter_coeffs(state.cutoff.current, state.resonance.current, state.sample_rate_inv);
+}
+
+void SawWaveVoice::stopNote(float /*velocity*/, bool allowTailOff)
+{
+    if (allowTailOff)
+    {
+        adsr_set_stage(&state.adsr, ADSR_RELEASE);
+    }
+    else
+    {
+        adsr_set_stage(&state.adsr, ADSR_IDLE);
+
+        clearCurrentNote();
+        state.phase_inc = 0.0;
+    }
+}
+
+float voice_tick(SawWaveVoice& voice)
+{
     // Saw wave
     // TODO: make band limited wavetable to prevent aliasing
-    double osc_sample = juce::jmap(voice.phase, -1.0, 1.0);
+    float osc_sample = juce::jmap<float>(voice.state.phase, -1.0f, 1.0f);
 
-    voice.phase += voice.phase_inc;
-    voice.phase -= (int)voice.phase;
+    voice.state.phase += voice.state.phase_inc;
+    voice.state.phase -= (int)voice.state.phase;
 
     // Filter:
-    // TODO: param smoothing
-    float cutoff_Hz = xm_fast_denomalise_Hz(voice.cutoff);
-    float lp_Q      = xm_lerpf(voice.resonance, 0.2, 2);
+    bool is_smoothing = !!voice.state.cutoff.remaining || !!voice.state.resonance.remaining;
 
-    Coeffs coeffs = filter_LP(cutoff_Hz, lp_Q, 1.0 / voice.getSampleRate());
+    if (is_smoothing)
+    {
+        smoothvalue_tick(&voice.state.cutoff);
+        smoothvalue_tick(&voice.state.resonance);
+        voice.state.coeffs = voice.state.coeffs =
+            make_filter_coeffs(voice.state.cutoff.current, voice.state.resonance.current, voice.state.sample_rate_inv);
+    }
 
-    float filter_sample = filter_process(osc_sample, &coeffs, voice.filter_state);
+    float filter_sample = filter_process(osc_sample, &voice.state.coeffs, voice.state.filter_state);
 
-    float env_amt = adsr_tick(&voice.adsr);
+    float env_amt = adsr_tick(&voice.state.adsr);
 
     filter_sample *= env_amt;
 
     return filter_sample;
 }
 
-void SineWaveVoice::renderNextBlock(AudioBuffer<float>& outputBuffer, int startSample, int numSamples)
+void SawWaveVoice::renderNextBlock(AudioBuffer<float>& outputBuffer, int startSample, int numSamples)
 {
-    cutoff    = processor.param_cutoff->load();
-    resonance = processor.param_resonance->load();
-    if (!approximatelyEqual(phase_inc, 0.0))
+    float  cutoff            = processor.param_cutoff->load();
+    float  res               = processor.param_resonance->load();
+    double smothing_time_sec = 0.05; // 50ms
+    smoothvalue_set_target(&state.cutoff, cutoff, smothing_time_sec * getSampleRate());
+    smoothvalue_set_target(&state.resonance, res, smothing_time_sec * getSampleRate());
+
+    if (state.adsr.current_stage != ADSR_IDLE)
     {
-        if (tailOff > 0.0)
+        while (--numSamples >= 0)
         {
-            while (--numSamples >= 0)
+            float currentSample = (float)(voice_tick(*this) * state.level);
+
+            for (int i = outputBuffer.getNumChannels(); --i >= 0;)
+                outputBuffer.addSample(i, startSample, currentSample);
+
+            ++startSample;
+
+            if (state.adsr.current_stage == ADSR_IDLE)
             {
-                auto currentSample = (float)(voice_tick(*this) * level * tailOff);
-
-                for (auto i = outputBuffer.getNumChannels(); --i >= 0;)
-                    outputBuffer.addSample(i, startSample, currentSample);
-
-                ++startSample;
-
-                tailOff *= 0.99;
-
-                if (tailOff <= 0.005)
-                {
-                    // tells the synth that this voice has stopped
-                    clearCurrentNote();
-
-                    phase_inc = 0.0;
-                    break;
-                }
-            }
-        }
-        else
-        {
-            while (--numSamples >= 0)
-            {
-                auto currentSample = (float)(voice_tick(*this) * level);
-
-                for (auto i = outputBuffer.getNumChannels(); --i >= 0;)
-                    outputBuffer.addSample(i, startSample, currentSample);
-
-                ++startSample;
+                // tells the synth that this voice has stopped
+                clearCurrentNote();
+                break;
             }
         }
     }

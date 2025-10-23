@@ -28,8 +28,8 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
     , audioProcessor(p)
     , label_cutoff{{}, "Cutoff:"}
     , label_resonance{{}, "Resonance:"}
-    , att_cutoff(p.state, "cutoff", slider_cutoff)
-    , att_resonance(p.state, "resonance", slider_resonance)
+    , att_cutoff(p.APVTS, "cutoff", slider_cutoff)
+    , att_resonance(p.APVTS, "resonance", slider_resonance)
 
 {
     add_slider(*this, slider_cutoff, label_cutoff);
@@ -89,13 +89,15 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
     {
         GRAPH_RESOLUTION = 64,
     };
-    static_assert(GRAPH_RESOLUTION < ARRLEN(audioProcessor.time_delta_history), "");
+    static_assert(GRAPH_RESOLUTION < ARRLEN(audioProcessor.time.delta_history), "");
+    static_assert(ARRLEN(audioProcessor.time.delta_history) == 128, "");
 
     spare_path.clear();
     spare_path.preallocateSpace(GRAPH_RESOLUTION);
 
-    const uint64_t mask      = ARRLEN(audioProcessor.time_delta_history) - 1;
-    const uint64_t start_idx = audioProcessor.time_graph_write_idx - 1;
+    // TODO write a ring buffer
+    const uint64_t mask      = ARRLEN(audioProcessor.time.delta_history) - 1;
+    const uint64_t start_idx = audioProcessor.time.graph_write_idx - 1;
 
     g.setColour(juce::Colours::white);
 
@@ -104,12 +106,11 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 
     for (int i = 0; i < ARRLEN(ms_vals); i++)
     {
-
         uint64_t idx  = start_idx - i;
         idx          &= mask;
 
-        xassert(idx < ARRLEN(audioProcessor.time_delta_history));
-        uint64_t time_delta_ns = audioProcessor.time_delta_history[idx];
+        xassert(idx < ARRLEN(audioProcessor.time.delta_history));
+        uint64_t time_delta_ns = audioProcessor.time.delta_history[idx];
 
         // Fast nanoseconds (int) to ms (double)
         double ms  = (time_delta_ns >> 10) * 1024e-6;
@@ -152,8 +153,8 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 
     g.drawText(spare_string, graph_area.getX() + 10, graph_area.getY() + 10, 100, 20, juce::Justification::topLeft);
 
-    uint64_t avg_ns  = audioProcessor.time_graph_running_sum;
-    avg_ns          /= ARRLEN(audioProcessor.time_delta_history);
+    uint64_t avg_ns  = audioProcessor.time.graph_running_sum;
+    avg_ns          /= ARRLEN(audioProcessor.time.delta_history);
 
     double avg_ms = (avg_ns >> 10) * 1024e-6;
     snprintf(label, sizeof(label), "Avg: %.3lfms", avg_ms);
