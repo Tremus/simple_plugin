@@ -11,10 +11,14 @@
 #include "PluginProcessor.h"
 #include <JuceHeader.h>
 
+#define ARRLEN(arr) (sizeof(arr) / sizeof(arr[0]))
+
 //==============================================================================
 /**
  */
-struct NewProjectAudioProcessorEditor : public juce::AudioProcessorEditor
+struct NewProjectAudioProcessorEditor
+    : public juce::AudioProcessorEditor
+    , protected juce::Timer
 {
 public:
     NewProjectAudioProcessor& audioProcessor;
@@ -23,12 +27,16 @@ public:
     Label                                          label_cutoff, label_resonance;
     AudioProcessorValueTreeState::SliderAttachment att_cutoff, att_resonance;
 
+    juce::Rectangle<int> graph_area = {0, 0, 0, 0};
+
     NewProjectAudioProcessorEditor(NewProjectAudioProcessor&);
     ~NewProjectAudioProcessorEditor() override;
 
     //==============================================================================
     void paint(juce::Graphics&) override;
     void resized() override;
+
+    void timerCallback() override;
 
 private:
     // This reference is provided as a quick way for your editor to

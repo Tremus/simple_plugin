@@ -213,6 +213,12 @@ public:
     std::atomic<float>* param_cutoff    = 0;
     std::atomic<float>* param_resonance = 0;
 
+    // Time values are in nanoseconds
+    uint64_t time_delta_history[128];
+    uint64_t time_graph_write_idx   = 0;
+    uint64_t time_graph_running_sum = 0;
+    uint64_t time_last_process_call = 0;
+
     //==============================================================================
     NewProjectAudioProcessor();
     ~NewProjectAudioProcessor() override;

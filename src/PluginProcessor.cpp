@@ -7,12 +7,13 @@
 */
 
 #define XHL_MATHS_IMPL
+#define XHL_TIME_IMPL
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "dsp.h"
 
-#include <xhl/maths.h>
+#include <xhl/time.h>
 
 //==============================================================================
 NewProjectAudioProcessor::NewProjectAudioProcessor()
@@ -42,6 +43,8 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
              NormalisableRange<float>(0.0f, 1.0f),
              0.5f)})
 {
+    xtime_init();
+
     this->param_cutoff    = state.getRawParameterValue("cutoff");
     this->param_resonance = state.getRawParameterValue("resonance");
 
@@ -52,6 +55,8 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 
     // ..and give the synth a sound to play
     synth.addSound(new SineWaveSound());
+
+    memset(time_delta_history, 0, sizeof(time_delta_history));
 }
 
 NewProjectAudioProcessor::~NewProjectAudioProcessor() {}
@@ -167,6 +172,17 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
     int numSamples = buffer.getNumSamples();
     synth.renderNextBlock(buffer, midiMessages, 0, numSamples);
+
+    xassert(time_graph_write_idx < juce::numElementsInArray(time_delta_history));
+    uint64_t time_now   = xtime_now_ns();
+    uint64_t time_delta = time_now - time_last_process_call;
+    uint64_t prev_delta = time_delta_history[time_graph_write_idx];
+
+    this->time_graph_running_sum = this->time_graph_running_sum + time_delta - prev_delta;
+
+    time_delta_history[time_graph_write_idx] = time_delta;
+    if (time_graph_write_idx >= juce::numElementsInArray(time_delta_history))
+        time_graph_write_idx = 0;
 }
 
 //==============================================================================
