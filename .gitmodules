@@ -1,0 +1,6 @@
+[submodule "modules/JUCE"]
+	path = modules/JUCE
+	url = https://github.com/juce-framework/JUCE
+[submodule "modules/xhl"]
+	path = modules/xhl
+	url = https://github.com/Tremus/xhl
